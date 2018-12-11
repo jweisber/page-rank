@@ -6,6 +6,10 @@ css: custom.css
   
 This is the first of two posts devoted to [an idea of David Wallace's](https://bit.ly/2z12SoB).
 
+- Part 1
+- [Part 2](/post/page-rank-1)
+- [Source on GitHub](https://github.com/jweisber/page-rank)
+
 Suppose you pick a philosophy PhD program at random and you go visit their website. There you pick a random person from the faculty list and see where they got their PhD. Then you go to that program's website and repeat the exercise: pick a random faculty member, see where they did their PhD, and go to that program's website. And again, and again.
 
 You'd come back to some programs more often than others in the long run. Which ones? Those whose graduates are in demand at other programs whose graduates are in demand at still other programs etc. In other words, the programs you keep coming back to are central in the hiring network of philosophy PhD programs.

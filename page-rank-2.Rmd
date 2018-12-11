@@ -12,6 +12,10 @@ source("helpers.R")
 
 This post is the second of two devoted to [an idea of David Wallace's](https://bit.ly/2z12SoB): applying Google's PageRank algorithm to the [APDA](http://www.placementdata.com/) placement data.
 
+- [Part 1](/post/page-rank-1)
+- Part 2
+- [Source on GitHub](https://github.com/jweisber/page-rank)
+
 [Last time](/post/page-rank-1.html) we looked at the motivation and theory behind the idea. Now we'll try predicting PageRanks. Can students who care about PageRank use the latest [PGR](https://www.philosophicalgourmet.com/) to guesstimate a program's PageRank 5 or 10 years in the future? Can they use the latest placement data?
 
 
