@@ -1,0 +1,303 @@
+---
+title: "Placement, PageRank, and the PGR: Part 2"
+output: md_document
+css: custom.css
+---
+  
+```{r setup, include=FALSE, warning=FALSE}
+library(tidyverse)
+library(tools) # for toTitleCase
+source("helpers.R")
+```
+
+This post is the second of two devoted to [an idea of David Wallace's](https://bit.ly/2z12SoB): applying Google's PageRank algorithm to the [APDA](http://www.placementdata.com/) placement data.
+
+[Last time](/post/page-rank-1.html) we looked at the motivation and theory behind the idea. Now we'll try predicting PageRanks. Can students who care about PageRank use the latest [PGR](https://www.philosophicalgourmet.com/) to guesstimate a program's PageRank 5 or 10 years in the future? Can they use the latest placement data?
+
+
+# The Data
+
+We'll use a somewhat different data set from last time, since we need things broken down by year. Our data comes now from [the APDA homepage](http://placementdata.com), where you can search by PhD program and get a list of jobs where its graduates have landed.
+
+Unfortunately the search results are in a pretty unfriendly format. This means doing some nasty [scraping](https://en.wikipedia.org/wiki/Web_scraping), a notoriously error-prone process. And even before scraping, the data seems to have some errors and quirks (duplicate entries, inconsistent capitalization, missing values, etc.). I've patched what I can, but we should keep in mind that we're already working with a pretty noisy signal even before we get to any analysis.
+
+```{r echo=FALSE, cache=TRUE}
+df_apda <- read_csv("data/apda-2018-11-9.csv",
+                    col_types = cols(
+                      grad_program = col_character(),
+                      id = col_character(),
+                      year_graduated = col_character(),
+                      aos = col_character(),
+                      year = col_integer(),
+                      placement_program = col_character(),
+                      type = col_character()
+                    ))
+
+df_apda$year[df_apda$year == 19182] <- 1982 # because goddamn
+df_apda$year[df_apda$year == 2104] <- 2014
+
+df_apda$grad_program <- toTitleCase(df_apda$grad_program)
+df_apda$placement_program <- toTitleCase(df_apda$placement_program)
+
+df_apda <- df_apda %>%
+  distinct() %>%
+  filter(!is.na(year) & !is.na(placement_program) & !is.na(type))
+```
+
+A quick poke around before we get to the main event: how much data do we have for each year? The years since 2010 really dominate this data set.
+
+```{r echo=FALSE, cache=TRUE, dpi=300}
+ggplot(df_apda) + 
+  geom_bar(aes(x = year), fill = "firebrick4") +
+  xlab("Year") + ylab("Records") +
+  theme_minimal()
+```
+
+That's going to be a problem, when we try predicting future PageRank based on past PageRank. Ideally we'd like to have two data-rich periods separated by a 5-year span. Then we can see how well a hypothetical prospective student would have done at predicting the PageRanks they'd face on the job market, using the PageRanks available when they were choosing a program. But we don't have that. So we'll have to live with some additional noise when we get to this below.
+
+For now let's turn to placement type. The APDA tracks whether a job is TT, a postdoc, temporary letureship, etc. TT and postdoc placements dominate the landscape, followed by temporary and non-academic positions.
+
+```{r echo=FALSE, cache=TRUE, dpi=300}
+type_levels <- c("Tenure-Track",
+                 "Fellowship/Postdoc",
+                 "Lecturer (Permanent)",
+                 "Instructor (Permanent)",
+                 "Adjunct (Permanent)",
+                 "Other (Permanent)",
+                 "Visiting",
+                 "Lecturer (Temporary)",
+                 "Instructor (Temporary)",
+                 "Other (Temporary)",
+                 "Adjunct (Temporary)",
+                 "Non-Academic")
+df_apda$type <- factor(df_apda$type, levels = type_levels)
+
+ggplot(df_apda) + 
+  geom_bar(aes(x = type), fill = "firebrick4") +
+  theme_minimal() +
+  xlab("") + ylab("") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1),
+        panel.grid.major.x = element_blank())
+```
+
+Placement types change dramatically over the years though. From the early to late naughties, TT changes from being the dominant type to a minority.
+
+```{r echo=FALSE, cache=TRUE, dpi=300}
+ggplot(df_apda) + 
+  geom_bar(aes(x = year, fill = type)) +
+  xlab("Year") + ylab("") +
+  theme_minimal()
+```
+
+Is this the story of the Great Recession? That's likely a big factor. But our data gets spottier as we go back through the naughties. So a selection effect is another likely culprit.
+
+Now let's turn to predicting PageRanks.
+
+
+# Predicting PageRank from PGR
+
+We'll calculate all PageRanks on a five-year window (a somewhat arbitrary choice). So the "future" PageRanks---the numbers we'll be trying to predict---are calculated from the placement data in the years 2014--2018.
+
+For now we'll count postdocs as well as TT placements, for continuity with the last post and with Wallace's original analysis. We'll rerun the analysis using only TT jobs at the end.
+
+Given these choices, here are the top 10 programs by PageRank for 2014--18.
+
+```{r echo=FALSE, cache=TRUE}
+types <- c("Tenure-Track", "Fellowship/Postdoc")
+
+summary_2018 <- summarize_placements(df_apda, 2014:2018, types)
+programs_2018 <- unique(summary_2018$grad_program)
+page_ranks_2018 <- page_rank_df(summary_2018, programs_2018) %>%
+  rename(page_rank_2018 = page_rank)
+
+page_ranks_2018 %>% 
+  arrange(desc(page_rank_2018)) %>%
+  slice(1:10) %>%
+  knitr::kable(col.names = c("Program", "PageRank 2014-18"))
+```
+
+How well do PGR scores predict these rankings? Following Wallace we'll start with the 2006 PGR. But we'll also consider the five iterations since. I've put the PageRanks (the *y*-axis) on a log scale for visibility.
+
+```{r echo=FALSE, cache=TRUE, dpi=300}
+pgr <- read_csv("data/pgr/pgr.csv", col_types = cols(program = col_character(),
+                                                     mean = col_double(), 
+                                                     locale = col_character(), 
+                                                     year = col_integer()))
+pgr$program <- toTitleCase(pgr$program)
+
+page_rank_vs_pgr <- page_ranks_2018 %>% 
+  inner_join(pgr, by = "program") %>%
+  select(program, pgr_mean = mean, year, page_rank_2018) %>%
+  group_by(year) %>%
+  mutate(rho = cor(pgr_mean, page_rank_2018, method = "pearson", use = "pairwise.complete.obs"))
+
+ggplot(page_rank_vs_pgr %>% 
+         mutate(label = paste(year, "~PGR~(rho==", round(rho, 2), ")") )) +
+  geom_point(aes(pgr_mean, page_rank_2018), na.rm = TRUE) +
+  facet_wrap(vars(label), labeller = label_parsed) +
+  scale_y_log10() +
+  xlab("PGR Rating") + ylab("PageRank 2014–18 (log)") +
+  theme_minimal()
+
+rho_min <- min(page_rank_vs_pgr$rho)
+rho_min_y <- page_rank_vs_pgr %>% filter(rho == rho_min) %>% slice(1) %>% .$year
+rho_min <- sprintf("%.2f", rho_min)
+rho_max <- max(page_rank_vs_pgr$rho)
+rho_max_y <- page_rank_vs_pgr %>% filter(rho == rho_max) %>% slice(1) %>% .$year
+rho_max <- sprintf("%.2f", rho_max)
+```
+
+Overall the correlation looks pretty strong, ranging from `r rho_min` in `r rho_min_y` to `r rho_max` in `r rho_max_y`. And that seems consistent with Wallace's original finding, a correlation of 0.75 between the 2006 PGR and all placement data up through 2016.
+
+```{r echo=FALSE, cache=TRUE}
+lower_rho <- page_rank_vs_pgr %>% 
+  ungroup() %>%
+  filter(pgr_mean <= 3) %>%
+  mutate(lower_rho = cor(page_rank_2018, pgr_mean, 
+                         method = "pearson", use = "pairwise.complete.obs")) %>%
+  slice(1) %>%
+  .$lower_rho %>%
+  round(2)
+```
+
+Notice though, the connection gets much weaker when PGR ratings are lower. Below a PGR rating of 3 or so, PageRank doesn't seem to increase much with PGR rating: the average correlation is only `r sprintf("%.2f", lower_rho)`.
+
+We have two conclusions so far then. First, as Wallace found, PGR rating seems to predict PageRank pretty well, even when the ratings are collected almost a decade in advance. But second, this effect is much stronger for programs with high PGR ratings.
+
+
+# Predicting PageRank from PageRank
+
+What if our hypothetical grad student had relied on the available placement data instead of PGR scores in deciding where to go?
+
+```{r echo=FALSE, cache=TRUE, dpi=300}
+years <- 2006:2013
+page_ranks <- data.frame(program = character(), 
+                        page_rank = numeric(),
+                        year = integer(),
+                        stringsAsFactors = FALSE)
+
+for (y in years) {
+  summary <- summarize_placements(df_apda, (y-4):y, types)
+  programs <- unique(summary$grad_program)
+  page_ranks_y <- page_rank_df(summary, programs) %>%
+    mutate(year = y)
+  page_ranks <- bind_rows(page_ranks, page_ranks_y)
+}
+
+page_ranks <- page_ranks %>%
+  inner_join(page_ranks_2018, by = "program") %>%
+  group_by(year) %>%
+  mutate(rho = cor(page_rank, page_rank_2018, method = "pearson", use = "pairwise.complete.obs"))
+
+ggplot(page_ranks %>%
+         mutate(label = paste(year, "~PageRank~(rho==", round(rho, 2), ")") )) +
+  geom_point(aes(page_rank, page_rank_2018), na.rm = TRUE) +
+  facet_wrap(vars(label), labeller = label_parsed, scales = "free") +
+  scale_x_log10() + scale_y_log10() +
+  xlab("PageRank (log)") + ylab("PageRank 2014–18 (log)") +
+  theme_minimal()
+```
+
+Well they'd probably have been better off using the PGR in 2006. But PageRank gets pretty competitive with PGR starting around 2010, when the placement data gets richer.
+
+It might be that PageRank has the potential to be a better predictor---even long range---provided we have enough placement data. Or it might be that PageRank is only better at close range. We can't be sure, but hopefully we'll find out in a few years as the APDA database grows.
+
+```{r echo=FALSE}
+# Can we supercharge our predictions by comining them? It seems not.
+# Multiple regression using e.g. 2011 PGR and 2013 PageRank barely improves our predictions.
+# Not too surprising, since our predictors are strongly correlated.
+# 
+# pgr_2011 <- pgr %>% 
+#   filter(year == 2011) %>% 
+#   select(program, pgr_mean_2011 = mean)
+# 
+# page_rank_2013 <- page_ranks %>% 
+#   filter(year == 2013) %>% 
+#   select(program, page_rank_2013 = page_rank, page_rank_2018)
+# 
+# two_vars <- page_rank_2013 %>%
+#   inner_join(pgr_2011, by = "program") %>%
+#   select(program, pgr_mean_2011, page_rank_2013, page_rank_2018)
+# 
+# fit <- lm(page_rank_2018 ~ page_rank_2013 * pgr_mean_2011, data = two_vars)
+# fit %>% summary()
+# 
+# correlation <- cor(two_vars$page_rank_2013, two_vars$pgr_mean_2011)
+```
+
+
+# Tenure-track Only
+
+Finally, let's do the same analysis but counting only tenure-track placements toward a department's PageRank. Here are our top 10 programs then (a more similar group to what we saw last time, note).
+
+```{r echo=FALSE, cache=TRUE}
+types <- c("Tenure-Track")
+
+summary_2018 <- summarize_placements(df_apda, 2014:2018, types)
+programs_2018 <- unique(summary_2018$grad_program)
+page_ranks_2018 <- page_rank_df(summary_2018, programs_2018) %>%
+  rename(page_rank_2018 = page_rank)
+
+page_ranks_2018 %>% 
+  arrange(desc(page_rank_2018)) %>%
+  slice(1:10) %>%
+  knitr::kable(col.names = c("Program", "PageRank 2014-18"))
+```
+
+Here are the comparisons with past PGR scores.
+
+```{r echo=FALSE, cache=TRUE, dpi=300}
+pgr <- read_csv("data/pgr/pgr.csv", col_types = cols(program = col_character(),
+                                                     mean = col_double(), 
+                                                     locale = col_character(), 
+                                                     year = col_integer()))
+
+pgr$program <- toTitleCase(pgr$program)
+
+page_rank_vs_pgr <- page_ranks_2018 %>% 
+  inner_join(pgr, by = "program") %>%
+  select(program, pgr_mean = mean, year, page_rank_2018) %>%
+  group_by(year) %>%
+  mutate(rho = cor(pgr_mean, page_rank_2018, method = "pearson", use = "pairwise.complete.obs"))
+
+ggplot(page_rank_vs_pgr %>% 
+         mutate(label = paste(year, "~PGR~(rho==", round(rho, 2), ")") )) +
+  geom_point(aes(pgr_mean, page_rank_2018), na.rm = TRUE) +
+  facet_wrap(vars(label), labeller = label_parsed) +
+  scale_y_log10() +
+  xlab("PGR Rating") + ylab("PageRank 2014–18 (log)") +
+  theme_minimal()
+```
+
+And here are past PageRanks.
+
+```{r echo=FALSE, cache=TRUE, dpi=300}
+years <- 2006:2013
+page_ranks <- data.frame(program = character(), 
+                         page_rank = numeric(),
+                         year = integer(),
+                         stringsAsFactors = FALSE)
+
+for (y in years) {
+  summary <- summarize_placements(df_apda, (y-4):y, types)
+  programs <- unique(summary$grad_program)
+  page_ranks_y <- page_rank_df(summary, programs) %>%
+    mutate(year = y)
+  page_ranks <- bind_rows(page_ranks, page_ranks_y)
+}
+
+page_ranks <- page_ranks %>%
+  inner_join(page_ranks_2018, by = "program") %>%
+  group_by(year) %>%
+  mutate(rho = cor(page_rank, page_rank_2018, method = "pearson", use = "pairwise.complete.obs"))
+
+ggplot(page_ranks %>%
+         mutate(label = paste(year, "~PageRank~(rho==", round(rho, 2), ")") )) +
+  geom_point(aes(page_rank, page_rank_2018), na.rm = TRUE) +
+  facet_wrap(vars(label), labeller = label_parsed, scales = "free") +
+  scale_x_log10() + scale_y_log10() +
+  xlab("PageRank (log)") + ylab("PageRank 2014–18 (log)") +
+  theme_minimal()
+```
+
+Unsurprisingly, restricting ourselves to TT placements makes things noisier across the board. PGR-based predictions show more resilience here, possibly because they're only affected by the added noise at one end.
